@@ -6,16 +6,22 @@ export function useStorage<T>(key: string, initialValue: T) {
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    AsyncStorage.getItem(key).then((stored) => {
-      if (stored !== null) {
-        try {
-          setValue(JSON.parse(stored));
-        } catch {
-          setValue(initialValue);
+    AsyncStorage.getItem(key)
+      .then((stored) => {
+        if (stored !== null) {
+          try {
+            setValue(JSON.parse(stored));
+          } catch {
+            setValue(initialValue);
+          }
         }
-      }
-      setLoaded(true);
-    });
+      })
+      .catch(() => {
+        // AsyncStorage not available — use in-memory only
+      })
+      .finally(() => {
+        setLoaded(true);
+      });
   }, [key]);
 
   const save = useCallback(
@@ -24,7 +30,7 @@ export function useStorage<T>(key: string, initialValue: T) {
         const resolved = typeof newValue === 'function'
           ? (newValue as (prev: T) => T)(prev)
           : newValue;
-        AsyncStorage.setItem(key, JSON.stringify(resolved));
+        AsyncStorage.setItem(key, JSON.stringify(resolved)).catch(() => {});
         return resolved;
       });
     },

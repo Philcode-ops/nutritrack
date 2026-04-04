@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { FoodItem, FoodLogEntry } from '../constants/types';
 import { Colors, Spacing, FontSize, BorderRadius } from '../constants/theme';
-import { v4 as uuidv4 } from 'uuid';
+import { generateId } from '../hooks/generateId';
 
 interface Props {
   food: FoodItem | null;
@@ -37,7 +37,7 @@ export function AddFoodModal({ food, visible, onClose, onAdd }: Props) {
     const today = new Date();
     const dateKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
     onAdd({
-      id: uuidv4(),
+      id: generateId(),
       food,
       grams: g,
       date: dateKey,

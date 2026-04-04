@@ -17,7 +17,7 @@ import { useNutritionContext } from '../../components/NutritionContext';
 import { AddFoodModal } from '../../components/AddFoodModal';
 import { CustomMeal, FoodItem } from '../../constants/types';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
-import { v4 as uuidv4 } from 'uuid';
+import { generateId } from '../../hooks/generateId';
 
 export default function MealsScreen() {
   const { customMeals, addCustomMeal, removeCustomMeal, addFoodEntry } = useNutritionContext();
@@ -45,7 +45,7 @@ export default function MealsScreen() {
       return;
     }
     const meal: CustomMeal = {
-      id: uuidv4(),
+      id: generateId(),
       name: mealName.trim(),
       calories: parseFloat(mealCalories) || 0,
       carbs: parseFloat(mealCarbs) || 0,
