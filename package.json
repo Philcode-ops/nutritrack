@@ -1,0 +1,32 @@
+{
+  "name": "nutritrack",
+  "version": "1.0.0",
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web"
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^15.1.1",
+    "@react-native-async-storage/async-storage": "^3.0.2",
+    "expo": "~55.0.11",
+    "expo-constants": "^55.0.11",
+    "expo-linking": "^55.0.11",
+    "expo-router": "^55.0.10",
+    "expo-status-bar": "^55.0.5",
+    "react": "19.0.0",
+    "react-native": "0.83.4",
+    "react-native-safe-area-context": "^5.7.0",
+    "react-native-screens": "^4.24.0",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.0",
+    "@types/react": "~19.0.0",
+    "@types/uuid": "^10.0.0",
+    "typescript": "~5.8.0"
+  },
+  "private": true
+}
