@@ -3,11 +3,11 @@
     "name": "NutriTrack",
     "slug": "nutritrack",
     "version": "1.0.0",
+    "sdkVersion": "55.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "nutritrack",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
     "splash": {
       "backgroundColor": "#4CAF50",
       "resizeMode": "contain"
