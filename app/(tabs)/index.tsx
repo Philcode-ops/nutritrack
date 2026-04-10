@@ -12,11 +12,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNutritionContext } from '../../components/NutritionContext';
 import { ProgressBar } from '../../components/ProgressBar';
+import { GOAL_MODE_LABELS } from '../../constants/types';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
 
 export default function DashboardScreen() {
   const router = useRouter();
-  const { todayEntries, todayTotals, calorieGoal, removeFoodEntry, loaded } = useNutritionContext();
+  const { todayEntries, todayTotals, targets, removeFoodEntry, loaded } = useNutritionContext();
 
   if (!loaded) {
     return (
@@ -28,12 +29,7 @@ export default function DashboardScreen() {
     );
   }
 
-  const remaining = Math.max(0, calorieGoal - todayTotals.calories);
-
-  // Estimate macro goals based on calorie goal (balanced diet)
-  const carbGoal = Math.round((calorieGoal * 0.45) / 4);  // 45% from carbs, 4 cal/g
-  const fatGoal = Math.round((calorieGoal * 0.30) / 9);    // 30% from fat, 9 cal/g
-  const proteinGoal = Math.round((calorieGoal * 0.25) / 4); // 25% from protein, 4 cal/g
+  const remaining = Math.max(0, targets.calories - todayTotals.calories);
 
   const handleDelete = (id: string, name: string) => {
     Alert.alert('Remove Entry', `Remove "${name}" from today's log?`, [
@@ -47,7 +43,12 @@ export default function DashboardScreen() {
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
         {/* Header */}
         <View style={styles.headerCard}>
-          <Text style={styles.greeting}>Today's Nutrition</Text>
+          <View style={styles.headerTop}>
+            <Text style={styles.greeting}>Today's Nutrition</Text>
+            <View style={styles.modeBadge}>
+              <Text style={styles.modeText}>{GOAL_MODE_LABELS[targets.goalMode]}</Text>
+            </View>
+          </View>
           <View style={styles.calorieRing}>
             <Text style={styles.calorieNumber}>{Math.round(todayTotals.calories)}</Text>
             <Text style={styles.calorieUnit}>kcal consumed</Text>
@@ -56,7 +57,7 @@ export default function DashboardScreen() {
           <ProgressBar
             label="Calories"
             current={todayTotals.calories}
-            goal={calorieGoal}
+            goal={targets.calories}
             color={Colors.calories}
             unit=" kcal"
             showPercentage
@@ -66,9 +67,9 @@ export default function DashboardScreen() {
         {/* Macros */}
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Macros</Text>
-          <ProgressBar label="Carbs" current={todayTotals.carbs} goal={carbGoal} color={Colors.carbs} unit="g" />
-          <ProgressBar label="Fat" current={todayTotals.fat} goal={fatGoal} color={Colors.fat} unit="g" />
-          <ProgressBar label="Protein" current={todayTotals.protein} goal={proteinGoal} color={Colors.protein} unit="g" />
+          <ProgressBar label="Protein" current={todayTotals.protein} goal={targets.protein} color={Colors.protein} unit="g" />
+          <ProgressBar label="Fat" current={todayTotals.fat} goal={targets.fat} color={Colors.fat} unit="g" />
+          <ProgressBar label="Carbs" current={todayTotals.carbs} goal={targets.carbs} color={Colors.carbs} unit="g" />
         </View>
 
         {/* Today's Meals */}
@@ -84,7 +85,10 @@ export default function DashboardScreen() {
                   <View style={styles.logInfo}>
                     <Text style={styles.logName} numberOfLines={1}>{entry.food.name}</Text>
                     <Text style={styles.logDetail}>
-                      {entry.grams}g · {Math.round(entry.food.calories * factor)} kcal
+                      {entry.grams}g · {Math.round(entry.food.calories * factor)} kcal ·{' '}
+                      P {Math.round(entry.food.protein * factor)}g ·{' '}
+                      F {Math.round(entry.food.fat * factor)}g ·{' '}
+                      C {Math.round(entry.food.carbs * factor)}g
                     </Text>
                   </View>
                   <TouchableOpacity
@@ -146,11 +150,27 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 3,
   },
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: Spacing.md,
+  },
   greeting: {
     fontSize: FontSize.xl,
     fontWeight: '700',
     color: Colors.text,
-    marginBottom: Spacing.md,
+  },
+  modeBadge: {
+    backgroundColor: Colors.primaryLight,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 3,
+    borderRadius: BorderRadius.sm,
+  },
+  modeText: {
+    fontSize: FontSize.xs,
+    fontWeight: '600',
+    color: Colors.primaryDark,
   },
   calorieRing: {
     alignItems: 'center',

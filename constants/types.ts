@@ -1,3 +1,10 @@
+import type { GoalMode as _GoalMode, ActivityLevel as _ActivityLevel } from './nutrition';
+
+export type GoalMode = _GoalMode;
+export type ActivityLevel = _ActivityLevel;
+export type { BodyData, NutritionProfile, DailyTargets } from './nutrition';
+export { ACTIVITY_FACTORS, ACTIVITY_LABELS, GOAL_MODE_LABELS } from './nutrition';
+
 export interface FoodItem {
   id: string;
   name: string;
@@ -27,30 +34,18 @@ export interface CustomMeal {
   protein: number;
 }
 
+/** Persisted user profile. Matches NutritionProfile shape for the engine. */
 export interface UserProfile {
   name: string;
   currentWeight: number;
   goalWeight: number;
+  height: number;
   age: number;
   gender: 'male' | 'female';
-  activityLevel: 'sedentary' | 'light' | 'moderate' | 'active' | 'very_active';
+  bodyFatPercent?: number;
+  activityLevel: ActivityLevel;
+  goalMode: GoalMode;
   manualCalorieGoal?: number;
 }
 
 export type FoodSource = 'international' | 'norwegian';
-
-export const ACTIVITY_MULTIPLIERS: Record<UserProfile['activityLevel'], number> = {
-  sedentary: 1.2,
-  light: 1.375,
-  moderate: 1.55,
-  active: 1.725,
-  very_active: 1.9,
-};
-
-export const ACTIVITY_LABELS: Record<UserProfile['activityLevel'], string> = {
-  sedentary: 'Sedentary',
-  light: 'Lightly Active',
-  moderate: 'Moderately Active',
-  active: 'Active',
-  very_active: 'Very Active',
-};

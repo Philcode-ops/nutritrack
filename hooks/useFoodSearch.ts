@@ -2,6 +2,8 @@ import { useState, useCallback, useRef } from 'react';
 import { FoodItem, FoodSource } from '../constants/types';
 import { generateId } from './generateId';
 
+// ── Open Food Facts parser ──────────────────────────────────────────
+
 function parseOpenFoodFacts(data: any): FoodItem[] {
   if (!data?.products) return [];
   return data.products
@@ -10,14 +12,20 @@ function parseOpenFoodFacts(data: any): FoodItem[] {
       id: generateId(),
       name: p.product_name || 'Unknown',
       brand: p.brands || undefined,
-      calories: Math.round(p.nutriments?.['energy-kcal_100g'] || p.nutriments?.['energy-kcal'] || 0),
-      carbs: Math.round((p.nutriments?.carbohydrates_100g || 0) * 10) / 10,
-      fat: Math.round((p.nutriments?.fat_100g || 0) * 10) / 10,
-      protein: Math.round((p.nutriments?.proteins_100g || 0) * 10) / 10,
+      calories: Math.round(p.nutriments?.['energy-kcal_100g'] ?? p.nutriments?.['energy-kcal'] ?? 0),
+      carbs: Math.round((p.nutriments?.carbohydrates_100g ?? 0) * 10) / 10,
+      fat: Math.round((p.nutriments?.fat_100g ?? 0) * 10) / 10,
+      protein: Math.round((p.nutriments?.proteins_100g ?? 0) * 10) / 10,
       servingSize: p.serving_size || undefined,
       source: 'openfoodfacts' as const,
     }));
 }
+
+// ── Matvaretabellen parser ──────────────────────────────────────────
+// API source: https://github.com/Mattilsynet/matvaretabellen-deux
+// Compact format: food->compact-api-data in pages/api.clj
+// Fields: { id, foodGroupId, url, foodName, energyKj, energyKcal,
+//           ediblePart, constituents: { "Prot": { quantity: [val, "g"] }, ... } }
 
 function getConstituentValue(constituents: any, nutrientId: string): number {
   if (!constituents) return 0;
@@ -29,7 +37,6 @@ function getConstituentValue(constituents: any, nutrientId: string): number {
   }
   // Full format: { number: value, unit: "g" }
   if (typeof entry.number === 'number') return entry.number;
-  // Direct number
   if (typeof entry === 'number') return entry;
   return 0;
 }
@@ -37,7 +44,7 @@ function getConstituentValue(constituents: any, nutrientId: string): number {
 function parseSingleMatvareFood(f: any): FoodItem {
   return {
     id: generateId(),
-    name: f.foodName || f.foodNameNo || 'Ukjent',
+    name: f.foodName || 'Ukjent',
     brand: undefined,
     calories: Math.round(f.energyKcal ?? 0),
     carbs: Math.round(getConstituentValue(f.constituents, 'Karbo') * 10) / 10,
@@ -47,35 +54,54 @@ function parseSingleMatvareFood(f: any): FoodItem {
   };
 }
 
-// Cache for the full Matvaretabellen food list (static API)
-let matvareCachePromise: Promise<any[]> | null = null;
+// ── Matvaretabellen data loader (static API, cached) ────────────────
+// The API is a statically generated site. No server-side search.
+// We fetch the full compact list once and filter client-side.
+
+let matvareCache: any[] | null = null;
+let matvareFetchPromise: Promise<any[]> | null = null;
 
 async function fetchMatvaretabellenFoods(): Promise<any[]> {
-  if (matvareCachePromise) return matvareCachePromise;
+  if (matvareCache) return matvareCache;
+  if (matvareFetchPromise) return matvareFetchPromise;
 
-  matvareCachePromise = (async () => {
-    // Try the compact endpoint first (smaller payload)
+  matvareFetchPromise = (async () => {
+    // URL pattern from urls.cljc: (str "/api/" (name locale) "/compact-foods.json")
     const urls = [
-      'https://www.matvaretabellen.no/api/foods/compact/no.json',
-      'https://www.matvaretabellen.no/api/foods/no.json',
+      'https://www.matvaretabellen.no/api/nb/compact-foods.json',
+      'https://www.matvaretabellen.no/api/en/compact-foods.json',
     ];
 
     for (const url of urls) {
       try {
-        const res = await fetch(url);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        const res = await fetch(url, {
+          signal: controller.signal,
+          headers: { 'Accept': 'application/json' },
+        });
+        clearTimeout(timeout);
+
         if (!res.ok) continue;
         const data = await res.json();
-        // Response could be {foods: [...]} or just an array
-        const foods = Array.isArray(data) ? data : (data.foods || []);
-        if (foods.length > 0) return foods;
+
+        // Response is either a plain array or { foods: [...] }
+        const foods = Array.isArray(data) ? data : (data.foods || data);
+        if (Array.isArray(foods) && foods.length > 0) {
+          matvareCache = foods;
+          return foods;
+        }
       } catch {
         continue;
       }
     }
+
+    // Reset promise so user can retry
+    matvareFetchPromise = null;
     return [];
   })();
 
-  return matvareCachePromise;
+  return matvareFetchPromise;
 }
 
 function searchMatvareFoods(foods: any[], query: string): FoodItem[] {
@@ -87,9 +113,11 @@ function searchMatvareFoods(foods: any[], query: string): FoodItem[] {
       const name = (f.foodName || '').toLowerCase();
       return terms.every((term) => name.includes(term));
     })
-    .slice(0, 20)
+    .slice(0, 25)
     .map(parseSingleMatvareFood);
 }
+
+// ── Hook ────────────────────────────────────────────────────────────
 
 export function useFoodSearch() {
   const [results, setResults] = useState<FoodItem[]>([]);
@@ -115,25 +143,47 @@ export function useFoodSearch() {
         if (source === 'international') {
           const encoded = encodeURIComponent(query.trim());
           const url = `https://world.openfoodfacts.org/api/v2/search?search_terms=${encoded}&fields=product_name,brands,nutriments,serving_size&lang=en&page_size=20`;
-          const res = await fetch(url);
-          if (!res.ok) throw new Error('Failed to fetch from Open Food Facts');
+
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 10000);
+          const res = await fetch(url, {
+            signal: controller.signal,
+            headers: {
+              'Accept': 'application/json',
+              'User-Agent': 'NutriTrack/1.0 (nutrition-tracker-app)',
+            },
+          });
+          clearTimeout(timeout);
+
+          if (!res.ok) throw new Error(`Open Food Facts returned ${res.status}`);
           const data = await res.json();
           items = parseOpenFoodFacts(data);
+          if (items.length === 0) {
+            throw new Error('No results found. Try a different search term.');
+          }
         } else {
           const allFoods = await fetchMatvaretabellenFoods();
           if (allFoods.length === 0) {
-            throw new Error('Could not load Norwegian food database');
+            throw new Error(
+              'Could not load Norwegian food database. Check your internet connection and try again.'
+            );
           }
           items = searchMatvareFoods(allFoods, query.trim());
+          if (items.length === 0) {
+            throw new Error('No Norwegian foods matched your search.');
+          }
         }
 
-        // Only update if this is still the latest search
         if (currentId === searchIdRef.current) {
           setResults(items);
+          setError(null);
         }
       } catch (err: any) {
         if (currentId === searchIdRef.current) {
-          setError(err.message || 'Search failed');
+          const msg = err.name === 'AbortError'
+            ? 'Search timed out. Please try again.'
+            : (err.message || 'Search failed');
+          setError(msg);
           setResults([]);
         }
       } finally {

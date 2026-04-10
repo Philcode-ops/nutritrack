@@ -1,19 +1,21 @@
 import { useMemo } from 'react';
 import { useStorage } from './useStorage';
+import { FoodLogEntry, CustomMeal, UserProfile } from '../constants/types';
 import {
-  FoodLogEntry,
-  CustomMeal,
-  UserProfile,
-  ACTIVITY_MULTIPLIERS,
-} from '../constants/types';
+  computeAllTargets,
+  NutritionProfile,
+  DailyTargets,
+} from '../constants/nutrition';
 
 const DEFAULT_PROFILE: UserProfile = {
   name: '',
-  currentWeight: 70,
-  goalWeight: 70,
+  currentWeight: 75,
+  goalWeight: 75,
+  height: 175,
   age: 30,
   gender: 'male',
   activityLevel: 'moderate',
+  goalMode: 'maintenance',
 };
 
 function getTodayKey(): string {
@@ -21,16 +23,27 @@ function getTodayKey(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function calculateBMR(profile: UserProfile): number {
-  // Mifflin-St Jeor Equation
-  const base = 10 * profile.currentWeight + 6.25 * 170 - 5 * profile.age;
-  return profile.gender === 'male' ? base + 5 : base - 161;
+/** Convert the persisted UserProfile into the NutritionProfile the engine expects. */
+function toNutritionProfile(p: UserProfile): NutritionProfile {
+  return {
+    body: {
+      currentWeightKg: p.currentWeight,
+      goalWeightKg: p.goalWeight,
+      heightCm: p.height,
+      age: p.age,
+      gender: p.gender,
+      bodyFatPercent: p.bodyFatPercent,
+    },
+    activityLevel: p.activityLevel,
+    goalMode: p.goalMode,
+    manualCalorieOverride: p.manualCalorieGoal,
+  };
 }
 
 export function useNutrition() {
   const [foodLog, setFoodLog, logLoaded] = useStorage<FoodLogEntry[]>('food_log', []);
   const [customMeals, setCustomMeals, mealsLoaded] = useStorage<CustomMeal[]>('custom_meals', []);
-  const [profile, setProfile, profileLoaded] = useStorage<UserProfile>('user_profile', DEFAULT_PROFILE);
+  const [profile, setProfile, profileLoaded] = useStorage<UserProfile>('user_profile_v2', DEFAULT_PROFILE);
 
   const today = getTodayKey();
 
@@ -54,19 +67,8 @@ export function useNutrition() {
     );
   }, [todayEntries]);
 
-  const calorieGoal = useMemo(() => {
-    if (profile.manualCalorieGoal && profile.manualCalorieGoal > 0) {
-      return profile.manualCalorieGoal;
-    }
-    const bmr = calculateBMR(profile);
-    const tdee = bmr * ACTIVITY_MULTIPLIERS[profile.activityLevel];
-    // If goal weight < current, deficit; if >, surplus
-    if (profile.goalWeight < profile.currentWeight) {
-      return Math.round(tdee - 500); // moderate deficit
-    } else if (profile.goalWeight > profile.currentWeight) {
-      return Math.round(tdee + 300); // moderate surplus
-    }
-    return Math.round(tdee); // maintain
+  const targets: DailyTargets = useMemo(() => {
+    return computeAllTargets(toNutritionProfile(profile));
   }, [profile]);
 
   const addFoodEntry = (entry: FoodLogEntry) => {
@@ -91,7 +93,7 @@ export function useNutrition() {
     foodLog,
     todayEntries,
     todayTotals,
-    calorieGoal,
+    targets,
     customMeals,
     profile,
     loaded,
