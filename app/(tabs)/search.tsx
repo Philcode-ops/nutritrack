@@ -44,6 +44,15 @@ export default function SearchScreen() {
       {/* Source Toggle */}
       <View style={styles.toggleContainer}>
         <TouchableOpacity
+          style={[styles.toggleBtn, source === 'norwegian' && styles.toggleActive]}
+          onPress={() => handleSourceChange('norwegian')}
+        >
+          <Text style={styles.flagEmoji}>🇳🇴</Text>
+          <Text style={[styles.toggleText, source === 'norwegian' && styles.toggleTextActive]}>
+            Norwegian
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
           style={[styles.toggleBtn, source === 'international' && styles.toggleActive]}
           onPress={() => handleSourceChange('international')}
         >
@@ -53,16 +62,7 @@ export default function SearchScreen() {
             color={source === 'international' ? Colors.textLight : Colors.text}
           />
           <Text style={[styles.toggleText, source === 'international' && styles.toggleTextActive]}>
-            International
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.toggleBtn, source === 'norwegian' && styles.toggleActive]}
-          onPress={() => handleSourceChange('norwegian')}
-        >
-          <Text style={styles.flagEmoji}>🇳🇴</Text>
-          <Text style={[styles.toggleText, source === 'norwegian' && styles.toggleTextActive]}>
-            Norwegian
+            International (USDA)
           </Text>
         </TouchableOpacity>
       </View>
@@ -112,9 +112,9 @@ export default function SearchScreen() {
         <View style={styles.center}>
           <Ionicons name="search" size={48} color={Colors.border} />
           <Text style={styles.emptyText}>
-            {source === 'international'
-              ? 'Search for any food product worldwide'
-              : 'Søk etter norske matvarer'}
+            {source === 'norwegian'
+              ? 'Søk etter norske matvarer'
+              : 'Search USDA food database'}
           </Text>
         </View>
       ) : (
