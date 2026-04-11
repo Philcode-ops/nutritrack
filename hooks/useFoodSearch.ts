@@ -34,7 +34,9 @@ function parseUSDA(data: any): FoodItem[] {
 // Compact endpoint: /api/nb/compact-foods.json
 // Compact format from food->compact-api-data in pages/api.clj:
 //   { id, foodGroupId, url, foodName, energyKj, energyKcal,
-//     ediblePart, constituents: { "Prot": { quantity: [val, "g"] }, ... } }
+//     ediblePart, constituents: { "Protein": { quantity: [val, "g"] }, ... } }
+// Nutrient IDs from nutrient.clj sort-names:
+//   Protein="Protein", Fat="Fett", Carbs="Karbo", Water="Vann", Fiber="Fiber"
 
 function getConstituentValue(constituents: any, nutrientId: string): number {
   if (!constituents || typeof constituents !== 'object') return 0;
@@ -72,7 +74,7 @@ function parseSingleMatvareFood(f: any): FoodItem {
     name: f.foodName || 'Ukjent',
     brand: undefined,
     calories: Math.round(calories),
-    protein: Math.round(getConstituentValue(f.constituents, 'Prot') * 10) / 10,
+    protein: Math.round(getConstituentValue(f.constituents, 'Protein') * 10) / 10,
     fat: Math.round(getConstituentValue(f.constituents, 'Fett') * 10) / 10,
     carbs: Math.round(getConstituentValue(f.constituents, 'Karbo') * 10) / 10,
     source: 'matvaretabellen' as const,
