@@ -49,3 +49,11 @@ export interface UserProfile {
 }
 
 export type FoodSource = 'international' | 'norwegian';
+
+export type { WeightEntry, WeightStatus, TimeRange, WeightSummary, WeightInsight } from './weight';
+export {
+  MIN_ENTRIES_FOR_TREND,
+  PLATEAU_THRESHOLD_KG_PER_WEEK,
+  EWMA_ALPHA,
+  TIME_RANGE_DAYS,
+} from './weight';
