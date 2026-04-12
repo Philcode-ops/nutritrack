@@ -6,10 +6,11 @@ import { Colors, FontSize, Spacing, BorderRadius } from '../constants/theme';
 // ── Chart Configuration ─────────────────────────────────────────────
 
 const CHART_HEIGHT = 200;
-const PADDING = { left: 48, right: 16, top: 16, bottom: 28 };
-const DOT_RADIUS = 4;
-const LINE_THICKNESS = 2;
-const TREND_LINE_THICKNESS = 1.5;
+const PADDING = { left: 48, right: 16, top: 24, bottom: 28 };
+const DOT_RADIUS = 5;
+const RAW_LINE_THICKNESS = 1.5;
+const RAW_LINE_OPACITY = 0.35;
+const TREND_LINE_THICKNESS = 2.5;
 const GRID_LINE_COUNT = 5;
 const X_LABEL_COUNT = 4;
 const MIN_Y_RANGE_KG = 4; // Minimum kg spread so chart isn't flat
@@ -17,10 +18,10 @@ const MIN_Y_RANGE_KG = 4; // Minimum kg spread so chart isn't flat
 // ── Sub-components ──────────────────────────────────────────────────
 
 function LineSegment({
-  x1, y1, x2, y2, color, thickness,
+  x1, y1, x2, y2, color, thickness, opacity = 1,
 }: {
   x1: number; y1: number; x2: number; y2: number;
-  color: string; thickness: number;
+  color: string; thickness: number; opacity?: number;
 }) {
   const dx = x2 - x1;
   const dy = y2 - y1;
@@ -40,6 +41,7 @@ function LineSegment({
         height: thickness,
         backgroundColor: color,
         borderRadius: thickness / 2,
+        opacity,
         transform: [{ rotate: `${angle}deg` }],
       }}
     />
@@ -224,7 +226,23 @@ export function WeightChart({ entries, trendValues, goalWeight }: WeightChartPro
             </>
           )}
 
-          {/* Trend line segments */}
+          {/* Raw data line (thin + translucent, drawn FIRST so trend overlays it) */}
+          {chartData.points.map((pt, i) => {
+            if (i === 0) return null;
+            const prev = chartData.points[i - 1];
+            return (
+              <LineSegment
+                key={`raw-${i}`}
+                x1={prev.x} y1={prev.y}
+                x2={pt.x} y2={pt.y}
+                color={Colors.primary}
+                thickness={RAW_LINE_THICKNESS}
+                opacity={RAW_LINE_OPACITY}
+              />
+            );
+          })}
+
+          {/* Trend line (thicker, full opacity, drawn ON TOP of raw) */}
           {chartData.trendPoints.map((pt, i) => {
             if (i === 0) return null;
             const prev = chartData.trendPoints[i - 1];
@@ -239,22 +257,7 @@ export function WeightChart({ entries, trendValues, goalWeight }: WeightChartPro
             );
           })}
 
-          {/* Data line segments */}
-          {chartData.points.map((pt, i) => {
-            if (i === 0) return null;
-            const prev = chartData.points[i - 1];
-            return (
-              <LineSegment
-                key={`line-${i}`}
-                x1={prev.x} y1={prev.y}
-                x2={pt.x} y2={pt.y}
-                color={Colors.primary}
-                thickness={LINE_THICKNESS}
-              />
-            );
-          })}
-
-          {/* Data dots */}
+          {/* Data dots (drawn LAST so they sit on top of every line) */}
           {chartData.points.map((pt, i) => (
             <View
               key={`dot-${i}`}
@@ -351,6 +354,8 @@ const styles = StyleSheet.create({
   dot: {
     position: 'absolute',
     backgroundColor: Colors.primary,
+    borderWidth: 1.5,
+    borderColor: Colors.surface,
   },
   legend: {
     position: 'absolute',

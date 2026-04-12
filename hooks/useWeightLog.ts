@@ -26,24 +26,24 @@ export function useWeightLog() {
     [sortedEntries],
   );
 
-  /** Add or update a weight entry. One entry per date — replaces on conflict. */
+  /** Add or update a weight entry. One entry per date — replaces on conflict.
+   *  Profile `currentWeight` sync is handled at the screen level via a useEffect
+   *  watching `latestEntry`, so CRUD here is a pure state update. */
   const addOrUpdateEntry = useCallback(
-    (date: string, weight_kg: number): WeightEntry => {
+    (date: string, weight_kg: number): void => {
       const now = Date.now();
-      let result: WeightEntry;
-
       setEntries((prev) => {
-        const existing = prev.find(e => e.date === date);
-        if (existing) {
-          result = { ...existing, weight_kg, updated_at: now };
-          return prev.map(e => e.date === date ? result! : e);
+        const existingIdx = prev.findIndex(e => e.date === date);
+        if (existingIdx >= 0) {
+          return prev.map((e, i) =>
+            i === existingIdx ? { ...e, weight_kg, updated_at: now } : e,
+          );
         }
-        result = { id: generateId(), date, weight_kg, created_at: now, updated_at: now };
-        return [...prev, result!];
+        return [
+          ...prev,
+          { id: generateId(), date, weight_kg, created_at: now, updated_at: now },
+        ];
       });
-
-      // Return the entry (for sync purposes)
-      return result!;
     },
     [setEntries],
   );

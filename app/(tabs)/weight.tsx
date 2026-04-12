@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,13 +7,13 @@ import {
   TextInput,
   TouchableOpacity,
   Alert,
-  FlatList,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useWeightLog } from '../../hooks/useWeightLog';
 import { useNutritionContext } from '../../components/NutritionContext';
 import { WeightChart } from '../../components/WeightChart';
+import { DatePickerModal } from '../../components/DatePickerModal';
 import {
   TimeRange,
   WeightStatus,
@@ -33,24 +33,73 @@ const STATUS_CONFIG: Record<WeightStatus, { icon: string; color: string }> = {
   insufficient_data: { icon: 'time-outline', color: Colors.textSecondary },
 };
 
+// ── Input sanitization: numeric with at most one decimal place ──────
+
+function sanitizeWeightInput(text: string): string {
+  // Accept comma as decimal separator (common in EU locales)
+  let cleaned = text.replace(/,/g, '.').replace(/[^0-9.]/g, '');
+  const firstDot = cleaned.indexOf('.');
+  if (firstDot !== -1) {
+    // Strip any additional dots and cap decimal part to 1 digit
+    cleaned = cleaned.substring(0, firstDot + 1)
+      + cleaned.substring(firstDot + 1).replace(/\./g, '').substring(0, 1);
+  }
+  // Cap integer part to 3 digits (max 999 kg)
+  const [intPart, decPart] = cleaned.split('.');
+  const capped = intPart.substring(0, 3);
+  return decPart !== undefined ? `${capped}.${decPart}` : capped;
+}
+
 export default function WeightScreen() {
   const {
     entries, latestEntry, summary, loaded,
-    addOrUpdateEntry, removeEntry, getEntriesForRange, getTrendForRange, getInsight, getEntryForDate,
+    addOrUpdateEntry, removeEntry, getEntriesForRange, getTrendForRange, getInsight,
   } = useWeightLog();
   const { profile, setProfile } = useNutritionContext();
 
   const [selectedDate, setSelectedDate] = useState(getTodayKey());
   const [weightInput, setWeightInput] = useState('');
   const [range, setRange] = useState<TimeRange>('1M');
+  const [datePickerVisible, setDatePickerVisible] = useState(false);
 
-  // Pre-fill input when date changes
-  const existingEntry = getEntryForDate(selectedDate);
-  const placeholder = existingEntry
-    ? String(existingEntry.weight_kg)
-    : latestEntry
-      ? String(latestEntry.weight_kg)
-      : String(profile.currentWeight);
+  // ── Profile sync: keep currentWeight aligned with LATEST entry by date ──
+  // Runs on every create / update / delete because latestEntry changes.
+  // - New entry that becomes the latest → profile updates
+  // - Backfilled older entry → latestEntry unchanged → profile NOT updated
+  // - Edit to latest entry → latestEntry.weight_kg changes → profile updates
+  // - Delete of latest entry → latestEntry becomes previous-latest → profile updates
+  // - Delete of older entry → latestEntry unchanged → profile NOT updated
+  useEffect(() => {
+    if (!latestEntry) return;
+    setProfile((prev) => {
+      if (Math.abs(prev.currentWeight - latestEntry.weight_kg) < 0.05) return prev;
+      return { ...prev, currentWeight: latestEntry.weight_kg };
+    });
+  }, [latestEntry, setProfile]);
+
+  // ── Input sync: pre-fill draft state when SELECTED DATE changes ──
+  // Intentionally depends only on selectedDate so the user's in-progress
+  // typing is never clobbered by entry/profile state updates.
+  const syncedForDateRef = useRef<string>('');
+  useEffect(() => {
+    if (!loaded) return;
+    if (syncedForDateRef.current === selectedDate) return;
+    syncedForDateRef.current = selectedDate;
+
+    const existing = entries.find(e => e.date === selectedDate);
+    const value = existing
+      ? String(existing.weight_kg)
+      : latestEntry
+        ? String(latestEntry.weight_kg)
+        : profile.currentWeight > 0 ? String(profile.currentWeight) : '';
+    setWeightInput(value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDate, loaded]);
+
+  const existingEntry = useMemo(
+    () => entries.find(e => e.date === selectedDate) ?? null,
+    [entries, selectedDate],
+  );
 
   const todayKey = getTodayKey();
   const canGoForward = selectedDate < todayKey;
@@ -61,23 +110,17 @@ export default function WeightScreen() {
   };
 
   const handleLogWeight = useCallback(() => {
-    const value = parseFloat(weightInput || placeholder);
+    const value = parseFloat(weightInput);
     if (isNaN(value) || value < 20 || value > 400) {
       Alert.alert('Invalid weight', 'Please enter a weight between 20 and 400 kg.');
       return;
     }
-
     const rounded = Math.round(value * 10) / 10;
     addOrUpdateEntry(selectedDate, rounded);
-
-    // Sync to profile if this is the latest or only entry
-    const isLatest = !latestEntry || selectedDate >= latestEntry.date;
-    if (isLatest) {
-      setProfile({ ...profile, currentWeight: rounded });
-    }
-
-    setWeightInput('');
-  }, [weightInput, placeholder, selectedDate, latestEntry, profile, setProfile, addOrUpdateEntry]);
+    // Keep the saved value visible in the field (no forced clear).
+    setWeightInput(String(rounded));
+    // Profile sync handled by the useEffect watching latestEntry.
+  }, [weightInput, selectedDate, addOrUpdateEntry]);
 
   const handleDeleteEntry = (id: string, date: string) => {
     Alert.alert(
@@ -90,18 +133,15 @@ export default function WeightScreen() {
     );
   };
 
-  // Chart data
   const chartEntries = useMemo(() => getEntriesForRange(range), [getEntriesForRange, range]);
   const trendValues = useMemo(() => getTrendForRange(range), [getTrendForRange, range]);
 
-  // Insight
   const insight = useMemo(
     () => getInsight(profile.goalMode, profile.goalWeight),
     [getInsight, profile.goalMode, profile.goalWeight],
   );
   const statusCfg = STATUS_CONFIG[insight.status];
 
-  // Recent entries for history (last 20, newest first)
   const recentEntries = useMemo(
     () => [...entries].reverse().slice(0, 20),
     [entries],
@@ -119,18 +159,29 @@ export default function WeightScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+      >
 
         {/* ── Log Weight Card ──────────────────── */}
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Log Weight</Text>
 
-          {/* Date selector */}
+          {/* Date selector: arrows + tappable date label */}
           <View style={styles.dateRow}>
             <TouchableOpacity onPress={handleDateBack} style={styles.dateArrow}>
               <Ionicons name="chevron-back" size={22} color={Colors.primary} />
             </TouchableOpacity>
-            <Text style={styles.dateText}>{getRelativeDateLabel(selectedDate)}</Text>
+            <TouchableOpacity
+              style={styles.dateLabelBtn}
+              onPress={() => setDatePickerVisible(true)}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="calendar-outline" size={16} color={Colors.primary} />
+              <Text style={styles.dateText}>{getRelativeDateLabel(selectedDate)}</Text>
+            </TouchableOpacity>
             <TouchableOpacity
               onPress={handleDateForward}
               style={styles.dateArrow}
@@ -146,7 +197,7 @@ export default function WeightScreen() {
 
           {existingEntry && (
             <Text style={styles.existingNote}>
-              Logged: {existingEntry.weight_kg} kg — entering a new value will update it
+              Logged: {existingEntry.weight_kg.toFixed(1)} kg — saving will update it
             </Text>
           )}
 
@@ -155,12 +206,14 @@ export default function WeightScreen() {
             <TextInput
               style={styles.weightInput}
               keyboardType="decimal-pad"
-              placeholder={placeholder}
+              placeholder="0.0"
               placeholderTextColor={Colors.textSecondary}
               value={weightInput}
-              onChangeText={setWeightInput}
+              onChangeText={(t) => setWeightInput(sanitizeWeightInput(t))}
               onSubmitEditing={handleLogWeight}
               returnKeyType="done"
+              selectTextOnFocus
+              maxLength={6}
             />
             <Text style={styles.unitLabel}>kg</Text>
             <TouchableOpacity style={styles.logBtn} onPress={handleLogWeight}>
@@ -174,7 +227,6 @@ export default function WeightScreen() {
 
         {/* ── Chart Card ──────────────────────── */}
         <View style={styles.card}>
-          {/* Range selector */}
           <View style={styles.rangeRow}>
             {TIME_RANGES.map((r) => (
               <TouchableOpacity
@@ -199,22 +251,9 @@ export default function WeightScreen() {
         {/* ── Summary Cards ───────────────────── */}
         {entries.length > 0 && (
           <View style={styles.summaryRow}>
-            <SummaryCard
-              label="7 days"
-              value={summary.change7d}
-              goalMode={profile.goalMode}
-            />
-            <SummaryCard
-              label="30 days"
-              value={summary.change30d}
-              goalMode={profile.goalMode}
-            />
-            <SummaryCard
-              label="per week"
-              value={summary.ratePerWeek}
-              goalMode={profile.goalMode}
-              suffix="/wk"
-            />
+            <SummaryCard label="7 days" value={summary.change7d} goalDelta={profile.goalWeight - (summary.current ?? 0)} />
+            <SummaryCard label="30 days" value={summary.change30d} goalDelta={profile.goalWeight - (summary.current ?? 0)} />
+            <SummaryCard label="per week" value={summary.ratePerWeek} goalDelta={profile.goalWeight - (summary.current ?? 0)} suffix="/wk" />
           </View>
         )}
 
@@ -232,33 +271,24 @@ export default function WeightScreen() {
         )}
 
         {/* ── Progress to Goal ────────────────── */}
-        {summary.current != null && profile.goalWeight > 0 && (
+        {summary.current != null && profile.goalWeight > 0 && summary.startWeight != null && (
           <View style={styles.card}>
             <Text style={styles.sectionTitle}>Progress to Goal</Text>
             <View style={styles.progressRow}>
-              <Text style={styles.progressLabel}>
-                {summary.startWeight?.toFixed(1)} kg
-              </Text>
+              <Text style={styles.progressLabel}>{summary.startWeight.toFixed(1)} kg</Text>
               <View style={styles.progressBarOuter}>
                 <View
                   style={[
                     styles.progressBarFill,
-                    {
-                      width: `${Math.min(
-                        Math.max(getGoalProgress(summary.startWeight!, summary.current, profile.goalWeight), 0),
-                        100,
-                      )}%`,
-                    },
+                    { width: `${Math.min(Math.max(getGoalProgress(summary.startWeight, summary.current, profile.goalWeight), 0), 100)}%` },
                   ]}
                 />
               </View>
-              <Text style={styles.progressLabel}>
-                {profile.goalWeight.toFixed(1)} kg
-              </Text>
+              <Text style={styles.progressLabel}>{profile.goalWeight.toFixed(1)} kg</Text>
             </View>
             <Text style={styles.progressCurrent}>
               Current: {summary.current.toFixed(1)} kg
-              {summary.startWeight !== null && summary.current !== summary.startWeight && (
+              {summary.current !== summary.startWeight && (
                 ` (${summary.current < summary.startWeight ? '' : '+'}${(summary.current - summary.startWeight).toFixed(1)} kg)`
               )}
             </Text>
@@ -275,7 +305,12 @@ export default function WeightScreen() {
               const prev = idx < recentEntries.length - 1 ? recentEntries[idx + 1] : null;
               const diff = prev ? entry.weight_kg - prev.weight_kg : null;
               return (
-                <View key={entry.id} style={styles.historyRow}>
+                <TouchableOpacity
+                  key={entry.id}
+                  style={styles.historyRow}
+                  onPress={() => setSelectedDate(entry.date)}
+                  activeOpacity={0.6}
+                >
                   <View style={styles.historyInfo}>
                     <Text style={styles.historyDate}>
                       {getRelativeDateLabel(entry.date)}
@@ -300,7 +335,7 @@ export default function WeightScreen() {
                   >
                     <Ionicons name="trash-outline" size={18} color={Colors.textSecondary} />
                   </TouchableOpacity>
-                </View>
+                </TouchableOpacity>
               );
             })}
           </View>
@@ -319,27 +354,49 @@ export default function WeightScreen() {
 
         <View style={{ height: 40 }} />
       </ScrollView>
+
+      {/* Date picker modal */}
+      <DatePickerModal
+        visible={datePickerVisible}
+        selectedDate={selectedDate}
+        onClose={() => setDatePickerVisible(false)}
+        onSelect={setSelectedDate}
+        maxDate={todayKey}
+      />
     </SafeAreaView>
   );
 }
 
 // ── Helper Components ───────────────────────────────────────────────
 
+/** Summary card — color is determined by whether the change moves TOWARD the goal.
+ *  Uses goalDelta (goalWeight - current) so sign is meaningful:
+ *    goalDelta > 0 → user needs to gain → positive change is good
+ *    goalDelta < 0 → user needs to lose → negative change is good
+ *    goalDelta ≈ 0 → user wants to maintain → small magnitude is good */
 function SummaryCard({
-  label, value, goalMode, suffix = '',
+  label, value, goalDelta, suffix = '',
 }: {
-  label: string; value: number | null; goalMode: string; suffix?: string;
+  label: string; value: number | null; goalDelta: number; suffix?: string;
 }) {
   const displayValue = value != null ? `${value > 0 ? '+' : ''}${value.toFixed(1)}` : '—';
 
   let color = Colors.textSecondary;
-  if (value != null && value !== 0) {
-    if (goalMode === 'fat_loss') {
-      color = value < 0 ? Colors.primary : Colors.error;
-    } else if (goalMode === 'muscle_gain') {
-      color = value > 0 ? Colors.primary : Colors.error;
-    } else {
+  if (value != null) {
+    const NEAR_GOAL = 1.0;
+    if (Math.abs(goalDelta) < NEAR_GOAL) {
+      // Maintain: small change is good, large change is bad
       color = Math.abs(value) < 0.3 ? Colors.primary : Colors.accent;
+    } else if (goalDelta > 0) {
+      // Need to gain: positive is good, flat is neutral, negative is bad
+      if (value > 0.1) color = Colors.primary;
+      else if (value < -0.1) color = Colors.error;
+      else color = Colors.accent;
+    } else {
+      // Need to lose: negative is good, flat is neutral, positive is bad
+      if (value < -0.1) color = Colors.primary;
+      else if (value > 0.1) color = Colors.error;
+      else color = Colors.accent;
     }
   }
 
@@ -381,12 +438,19 @@ const styles = StyleSheet.create({
   // Date selector
   dateRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   dateArrow: { padding: Spacing.sm },
+  dateLabelBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    marginHorizontal: Spacing.sm,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs + 2,
+    backgroundColor: Colors.primaryLight, borderRadius: BorderRadius.sm,
+    minWidth: 140, justifyContent: 'center',
+  },
   dateText: {
-    fontSize: FontSize.md, fontWeight: '600', color: Colors.text,
-    marginHorizontal: Spacing.md, minWidth: 100, textAlign: 'center',
+    fontSize: FontSize.md, fontWeight: '700', color: Colors.primaryDark,
+    textAlign: 'center',
   },
   existingNote: {
     fontSize: FontSize.xs, color: Colors.accent, fontStyle: 'italic',

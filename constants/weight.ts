@@ -68,8 +68,11 @@ export const MAINTENANCE_DRIFT_THRESHOLD_KG_PER_WEEK = 0.3;
 /** EWMA smoothing factor (lower = smoother, range 0-1) */
 export const EWMA_ALPHA = 0.3;
 
-/** How close to goal (kg) counts as "at goal" */
+/** How close to goal (kg) counts as "at goal" (stable is good) */
 export const AT_GOAL_TOLERANCE_KG = 0.5;
+
+/** Within this distance from goal (kg), stability is valued over movement */
+export const NEAR_GOAL_KG = 1.0;
 
 /** Time range durations in days (null = all time) */
 export const TIME_RANGE_DAYS: Record<TimeRange, number | null> = {
@@ -228,8 +231,50 @@ export function computeWeightSummary(entries: WeightEntry[]): WeightSummary {
 
 // ── Goal-Aware Status Logic ─────────────────────────────────────────
 
-/** Determine weight tracking status based on goal mode and recent trend.
- *  Returns a status enum + human-readable insight text. */
+/** Mode-specific context string to append to the end of messages.
+ *  Goal direction determines the primary signal; mode adds flavor. */
+function modeContext(goalMode: GoalMode, scenario: 'plateau_gain' | 'plateau_lose' | 'on_track_gain' | 'fast_gain' | 'reverse'): string {
+  const context: Record<string, Partial<Record<GoalMode, string>>> = {
+    plateau_gain: {
+      muscle_gain: 'Try a small calorie bump or review training volume.',
+      strength: 'Consider a small surplus to support recovery and strength gains.',
+      endurance: 'Assess fueling — sustained gains support training load.',
+      maintenance: 'Gently increase intake if you want to reach your goal.',
+    },
+    plateau_lose: {
+      fat_loss: 'Consider a diet break, refeed, or gentle deficit increase.',
+      maintenance: 'Review intake if losing is the target.',
+    },
+    on_track_gain: {
+      muscle_gain: 'Good pace for lean hypertrophy.',
+      strength: 'Supports strength progression and recovery.',
+      endurance: 'Monitor performance as weight rises.',
+    },
+    fast_gain: {
+      muscle_gain: 'Risk of excess fat gain — reduce surplus slightly.',
+      strength: 'Consider tightening the surplus to stay leaner.',
+      endurance: 'Extra mass may hurt endurance performance.',
+    },
+    reverse: {
+      fat_loss: 'Gaining, but goal is to lose. Review intake.',
+      muscle_gain: 'Losing, but goal is to gain. Increase calories.',
+    },
+  };
+  return context[scenario]?.[goalMode] ?? '';
+}
+
+/** Determine weight tracking status.
+ *
+ *  Primary signal: direction from current weight to goal weight.
+ *  Secondary signal: current mode (adds context to messages).
+ *
+ *  Logic:
+ *    - Near goal (|delta| < NEAR_GOAL_KG)  → stability is good
+ *    - Goal wants gain (delta > 0)         → rate > threshold = on_track, flat = plateau
+ *    - Goal wants loss (delta < 0)         → rate < -threshold = on_track, flat = plateau
+ *
+ *  This fixes the bug where `strength` mode with +3 kg goal and flat weight
+ *  was incorrectly reported as "Stable / good for performance". */
 export function determineWeightStatus(
   entries: WeightEntry[],
   goalMode: GoalMode,
@@ -258,65 +303,84 @@ export function determineWeightStatus(
 
   const absRate = Math.abs(rate);
   const current = sorted[sorted.length - 1].weight_kg;
-  const atGoal = Math.abs(current - goalWeight) < AT_GOAL_TOLERANCE_KG;
+  const goalDelta = goalWeight - current;          // +ve = need to gain, -ve = need to lose
+  const absGoalDelta = Math.abs(goalDelta);
 
-  switch (goalMode) {
-    case 'fat_loss': {
-      if (atGoal) {
-        return { status: 'on_track', title: 'Goal reached!', message: `You're at your goal weight of ${goalWeight} kg.` };
-      }
-      if (rate < -PLATEAU_THRESHOLD_KG_PER_WEEK) {
-        const toGo = current > goalWeight ? `${(current - goalWeight).toFixed(1)} kg to goal.` : 'Keep it up!';
-        return { status: 'on_track', title: 'On track', message: `Losing ${absRate.toFixed(1)} kg/week. ${toGo}` };
-      }
-      if (absRate <= PLATEAU_THRESHOLD_KG_PER_WEEK) {
-        return { status: 'plateau', title: 'Plateau', message: 'Weight is stable. Consider adjusting calories or increasing activity.' };
-      }
-      return { status: 'wrong_direction', title: 'Gaining weight', message: `Gaining ${absRate.toFixed(1)} kg/week during fat loss phase. Review your intake.` };
+  // ── CASE 1: Near goal — stability is the right outcome ────────────
+  if (absGoalDelta < NEAR_GOAL_KG) {
+    if (absRate <= PLATEAU_THRESHOLD_KG_PER_WEEK) {
+      return {
+        status: 'on_track',
+        title: 'At goal',
+        message: `You're within ${NEAR_GOAL_KG.toFixed(1)} kg of your goal (${goalWeight.toFixed(1)} kg) and holding steady.`,
+      };
     }
-
-    case 'muscle_gain': {
-      if (rate > PLATEAU_THRESHOLD_KG_PER_WEEK && rate <= FAST_GAIN_THRESHOLD_KG_PER_WEEK) {
-        return { status: 'on_track', title: 'On track', message: `Gaining ${absRate.toFixed(1)} kg/week — good pace for lean gains.` };
-      }
-      if (rate > FAST_GAIN_THRESHOLD_KG_PER_WEEK) {
-        return { status: 'wrong_direction', title: 'Gaining too fast', message: `${absRate.toFixed(1)} kg/week is fast — risk of excess fat gain. Reduce surplus slightly.` };
-      }
-      if (absRate <= PLATEAU_THRESHOLD_KG_PER_WEEK) {
-        return { status: 'plateau', title: 'Plateau', message: 'Weight is stable. Consider increasing calories slightly for growth.' };
-      }
-      return { status: 'wrong_direction', title: 'Losing weight', message: 'Weight decreasing during muscle gain phase. Increase calorie intake.' };
+    if (absRate <= MAINTENANCE_DRIFT_THRESHOLD_KG_PER_WEEK) {
+      return {
+        status: 'plateau',
+        title: 'Minor drift near goal',
+        message: `${rate > 0 ? 'Drifting up' : 'Drifting down'} ${absRate.toFixed(1)} kg/week. Monitor closely.`,
+      };
     }
+    return {
+      status: 'wrong_direction',
+      title: rate > 0 ? 'Drifting up' : 'Drifting down',
+      message: `${absRate.toFixed(1)} kg/week change near your goal. Adjust intake to stabilize.`,
+    };
+  }
 
-    case 'maintenance': {
-      if (absRate <= PLATEAU_THRESHOLD_KG_PER_WEEK) {
-        return { status: 'on_track', title: 'Stable', message: 'Weight is stable — well maintained.' };
-      }
-      if (absRate <= MAINTENANCE_DRIFT_THRESHOLD_KG_PER_WEEK) {
-        return { status: 'plateau', title: 'Minor drift', message: `${rate > 0 ? 'Slight gain' : 'Slight loss'} of ${absRate.toFixed(1)} kg/week. Monitor closely.` };
-      }
+  // ── CASE 2: Goal is to GAIN (goalDelta > 0) ───────────────────────
+  if (goalDelta > 0) {
+    if (rate > PLATEAU_THRESHOLD_KG_PER_WEEK && rate <= FAST_GAIN_THRESHOLD_KG_PER_WEEK) {
+      return {
+        status: 'on_track',
+        title: 'Gaining toward goal',
+        message: `+${absRate.toFixed(1)} kg/week. ${goalDelta.toFixed(1)} kg to go. ${modeContext(goalMode, 'on_track_gain')}`.trim(),
+      };
+    }
+    if (rate > FAST_GAIN_THRESHOLD_KG_PER_WEEK) {
       return {
         status: 'wrong_direction',
-        title: rate > 0 ? 'Gaining' : 'Losing',
-        message: `${absRate.toFixed(1)} kg/week change. Adjust intake to maintain.`,
+        title: 'Gaining too fast',
+        message: `+${absRate.toFixed(1)} kg/week. ${modeContext(goalMode, 'fast_gain') || 'Faster than recommended for lean gains.'}`,
       };
     }
-
-    case 'endurance':
-    case 'strength': {
-      if (absRate <= MAINTENANCE_DRIFT_THRESHOLD_KG_PER_WEEK) {
-        return { status: 'on_track', title: 'Stable', message: 'Weight is stable — good for performance goals.' };
-      }
+    if (absRate <= PLATEAU_THRESHOLD_KG_PER_WEEK) {
       return {
-        status: rate > 0 ? 'plateau' : 'wrong_direction',
-        title: rate > 0 ? 'Gaining slightly' : 'Losing weight',
-        message: `${absRate.toFixed(1)} kg/week change. Monitor how this affects your performance.`,
+        status: 'plateau',
+        title: 'Plateau',
+        message: `Weight flat, but goal is +${goalDelta.toFixed(1)} kg. ${modeContext(goalMode, 'plateau_gain') || 'Consider increasing calories.'}`,
       };
     }
-
-    default:
-      return { status: 'insufficient_data', title: 'Unknown goal', message: 'Set a goal mode in your profile.' };
+    // rate < -plateau threshold → losing
+    return {
+      status: 'wrong_direction',
+      title: 'Losing weight',
+      message: `${absRate.toFixed(1)} kg/week loss — goal is to gain ${goalDelta.toFixed(1)} kg. ${modeContext(goalMode, 'reverse') || 'Increase intake.'}`,
+    };
   }
+
+  // ── CASE 3: Goal is to LOSE (goalDelta < 0) ───────────────────────
+  if (rate < -PLATEAU_THRESHOLD_KG_PER_WEEK) {
+    return {
+      status: 'on_track',
+      title: 'Losing toward goal',
+      message: `-${absRate.toFixed(1)} kg/week. ${absGoalDelta.toFixed(1)} kg to go.`,
+    };
+  }
+  if (absRate <= PLATEAU_THRESHOLD_KG_PER_WEEK) {
+    return {
+      status: 'plateau',
+      title: 'Plateau',
+      message: `Weight flat, but goal is -${absGoalDelta.toFixed(1)} kg. ${modeContext(goalMode, 'plateau_lose') || 'Consider adjusting calories or activity.'}`,
+    };
+  }
+  // rate > plateau threshold → gaining
+  return {
+    status: 'wrong_direction',
+    title: 'Gaining weight',
+    message: `+${absRate.toFixed(1)} kg/week — goal is to lose ${absGoalDelta.toFixed(1)} kg. ${modeContext(goalMode, 'reverse') || 'Review intake.'}`,
+  };
 }
 
 // ── Export Readiness ────────────────────────────────────────────────
