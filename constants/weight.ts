@@ -85,15 +85,32 @@ export const TIME_RANGE_DAYS: Record<TimeRange, number | null> = {
 
 // ── Date Utilities ──────────────────────────────────────────────────
 
-/** Format a Date object to YYYY-MM-DD using local time */
+/** Format a Date object to YYYY-MM-DD using local time. Falls back to today if invalid. */
 export function formatDate(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const t = d.getTime();
+  const safe = Number.isFinite(t) ? d : new Date();
+  return `${safe.getFullYear()}-${String(safe.getMonth() + 1).padStart(2, '0')}-${String(safe.getDate()).padStart(2, '0')}`;
 }
 
-/** Parse YYYY-MM-DD to a local-time timestamp (avoids UTC midnight issues) */
+/** Validate a YYYY-MM-DD string and return a { y, m, d } triple, or null if invalid. */
+export function parseDateKey(dateStr: string): { y: number; m: number; d: number } | null {
+  if (typeof dateStr !== 'string') return null;
+  const parts = dateStr.split('-');
+  if (parts.length !== 3) return null;
+  const y = Number(parts[0]);
+  const m = Number(parts[1]);
+  const d = Number(parts[2]);
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return null;
+  if (m < 1 || m > 12 || d < 1 || d > 31 || y < 1900 || y > 9999) return null;
+  return { y, m, d };
+}
+
+/** Parse YYYY-MM-DD to a local-time timestamp (avoids UTC midnight issues).
+ *  Returns NaN for invalid input — callers must guard. */
 export function dateToTimestamp(dateStr: string): number {
-  const [y, m, d] = dateStr.split('-').map(Number);
-  return new Date(y, m - 1, d).getTime();
+  const parsed = parseDateKey(dateStr);
+  if (!parsed) return NaN;
+  return new Date(parsed.y, parsed.m - 1, parsed.d).getTime();
 }
 
 /** Get today's date as YYYY-MM-DD */
@@ -125,12 +142,15 @@ export function getRelativeDateLabel(dateStr: string): string {
   return formatDisplayDate(dateStr);
 }
 
-/** Shift a YYYY-MM-DD string by N days */
+/** Shift a YYYY-MM-DD string by N days. Falls back to today if input is invalid. */
 export function shiftDate(dateStr: string, days: number): string {
-  const [y, m, d] = dateStr.split('-').map(Number);
-  const date = new Date(y, m - 1, d);
-  date.setDate(date.getDate() + days);
-  return formatDate(date);
+  const parsed = parseDateKey(dateStr);
+  const safeDays = Number.isFinite(days) ? Math.trunc(days) : 0;
+  const base = parsed
+    ? new Date(parsed.y, parsed.m - 1, parsed.d)
+    : new Date();
+  base.setDate(base.getDate() + safeDays);
+  return formatDate(base);
 }
 
 // ── Core Calculations ───────────────────────────────────────────────
@@ -140,65 +160,90 @@ export function sortByDate(entries: WeightEntry[]): WeightEntry[] {
   return [...entries].sort((a, b) => a.date.localeCompare(b.date));
 }
 
-/** Filter entries to those within the last N days (null = no filter) */
+/** Filter entries to those within the last N days (null = no filter).
+ *  Invalid or negative `days` returns the full list (safe default). */
 export function filterByDays(entries: WeightEntry[], days: number | null): WeightEntry[] {
   if (days === null) return entries;
+  if (!Number.isFinite(days) || days <= 0) return entries;
   const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - days);
+  cutoff.setDate(cutoff.getDate() - Math.floor(days));
   const cutoffStr = formatDate(cutoff);
-  return entries.filter(e => e.date >= cutoffStr);
+  return entries.filter(e => typeof e.date === 'string' && e.date >= cutoffStr);
 }
 
 /** Calculate EWMA trend line for sorted entries.
  *  Returns an array of smoothed weight values, one per entry.
- *  Handles irregular spacing: entries far apart get less smoothing. */
+ *  Handles irregular spacing: entries far apart get less smoothing.
+ *  Guards against invalid dates/weights — falls back to previous trend value. */
 export function calculateEWMA(entries: WeightEntry[], alpha: number = EWMA_ALPHA): number[] {
-  if (entries.length === 0) return [];
-  const trend: number[] = [entries[0].weight_kg];
+  if (!Array.isArray(entries) || entries.length === 0) return [];
+  const safeAlpha = Number.isFinite(alpha) ? Math.min(Math.max(alpha, 0.01), 1) : EWMA_ALPHA;
+  const firstWeight = Number(entries[0].weight_kg);
+  if (!Number.isFinite(firstWeight)) return [];
+  const trend: number[] = [firstWeight];
   for (let i = 1; i < entries.length; i++) {
-    // Adjust alpha based on time gap: more gap = more weight on new observation
-    const dayGap = (dateToTimestamp(entries[i].date) - dateToTimestamp(entries[i - 1].date)) / (1000 * 60 * 60 * 24);
-    const adjustedAlpha = 1 - Math.pow(1 - alpha, Math.min(dayGap, 7));
-    trend.push(adjustedAlpha * entries[i].weight_kg + (1 - adjustedAlpha) * trend[i - 1]);
+    const currWeight = Number(entries[i].weight_kg);
+    const prevTrend = trend[i - 1];
+    if (!Number.isFinite(currWeight)) {
+      trend.push(prevTrend);
+      continue;
+    }
+    const t1 = dateToTimestamp(entries[i].date);
+    const t0 = dateToTimestamp(entries[i - 1].date);
+    const dayGap = Number.isFinite(t1) && Number.isFinite(t0)
+      ? Math.max(0, (t1 - t0) / (1000 * 60 * 60 * 24))
+      : 1;
+    const adjustedAlpha = 1 - Math.pow(1 - safeAlpha, Math.min(dayGap, 7));
+    const next = adjustedAlpha * currWeight + (1 - adjustedAlpha) * prevTrend;
+    trend.push(Number.isFinite(next) ? next : prevTrend);
   }
   return trend;
 }
 
 /** Calculate rate of weight change in kg per week */
 export function calculateRatePerWeek(sorted: WeightEntry[]): number | null {
-  if (sorted.length < 2) return null;
+  if (!Array.isArray(sorted) || sorted.length < 2) return null;
   const first = sorted[0];
   const last = sorted[sorted.length - 1];
-  const daysDiff = (dateToTimestamp(last.date) - dateToTimestamp(first.date)) / (1000 * 60 * 60 * 24);
-  if (daysDiff < MIN_DAYS_FOR_RATE) return null;
-  const weightChange = last.weight_kg - first.weight_kg;
-  return Math.round((weightChange / daysDiff) * 7 * 100) / 100;
+  const t1 = dateToTimestamp(last.date);
+  const t0 = dateToTimestamp(first.date);
+  if (!Number.isFinite(t1) || !Number.isFinite(t0)) return null;
+  const daysDiff = (t1 - t0) / (1000 * 60 * 60 * 24);
+  if (!Number.isFinite(daysDiff) || daysDiff < MIN_DAYS_FOR_RATE) return null;
+  const weightChange = Number(last.weight_kg) - Number(first.weight_kg);
+  if (!Number.isFinite(weightChange)) return null;
+  const rate = (weightChange / daysDiff) * 7;
+  if (!Number.isFinite(rate)) return null;
+  return Math.round(rate * 100) / 100;
 }
 
 /** Get weight change over a specific number of days.
  *  Finds the entry closest to (but not after) the cutoff date and
  *  compares with the latest entry. */
 export function getChangeOverDays(sorted: WeightEntry[], days: number): number | null {
-  if (sorted.length < 2) return null;
+  if (!Array.isArray(sorted) || sorted.length < 2) return null;
+  if (!Number.isFinite(days) || days <= 0) return null;
   const latest = sorted[sorted.length - 1];
   const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - days);
+  cutoff.setDate(cutoff.getDate() - Math.floor(days));
   const cutoffStr = formatDate(cutoff);
 
   // Find entry closest to cutoff (on or before)
   let closest: WeightEntry | null = null;
   for (const entry of sorted) {
-    if (entry.date <= cutoffStr) {
+    if (typeof entry.date === 'string' && entry.date <= cutoffStr) {
       closest = entry;
     }
   }
   if (!closest) return null;
-  return Math.round((latest.weight_kg - closest.weight_kg) * 10) / 10;
+  const diff = Number(latest.weight_kg) - Number(closest.weight_kg);
+  if (!Number.isFinite(diff)) return null;
+  return Math.round(diff * 10) / 10;
 }
 
 /** Compute full weight summary from all entries */
 export function computeWeightSummary(entries: WeightEntry[]): WeightSummary {
-  if (entries.length === 0) {
+  if (!Array.isArray(entries) || entries.length === 0) {
     return {
       current: null, change7d: null, change30d: null, change90d: null,
       changeAll: null, startWeight: null, minWeight: null, maxWeight: null,
@@ -207,24 +252,38 @@ export function computeWeightSummary(entries: WeightEntry[]): WeightSummary {
   }
 
   const sorted = sortByDate(entries);
-  const current = sorted[sorted.length - 1].weight_kg;
-  const startWeight = sorted[0].weight_kg;
-  const weights = sorted.map(e => e.weight_kg);
+  const current = Number(sorted[sorted.length - 1].weight_kg);
+  const startWeight = Number(sorted[0].weight_kg);
+  const weights = sorted
+    .map(e => Number(e.weight_kg))
+    .filter(w => Number.isFinite(w));
+
+  // Use a plain reduce (not spread) to avoid stack issues on large arrays
+  let minWeight: number | null = null;
+  let maxWeight: number | null = null;
+  for (const w of weights) {
+    if (minWeight === null || w < minWeight) minWeight = w;
+    if (maxWeight === null || w > maxWeight) maxWeight = w;
+  }
 
   // Rate from last 30 days
   const last30 = sortByDate(filterByDays(sorted, 30));
 
+  const changeAll = sorted.length >= 2 && Number.isFinite(current) && Number.isFinite(startWeight)
+    ? Math.round((current - startWeight) * 10) / 10
+    : null;
+
   return {
-    current,
+    current: Number.isFinite(current) ? current : null,
     change7d: getChangeOverDays(sorted, 7),
     change30d: getChangeOverDays(sorted, 30),
     change90d: getChangeOverDays(sorted, 90),
-    changeAll: sorted.length >= 2 ? Math.round((current - startWeight) * 10) / 10 : null,
-    startWeight,
-    minWeight: Math.min(...weights),
-    maxWeight: Math.max(...weights),
+    changeAll,
+    startWeight: Number.isFinite(startWeight) ? startWeight : null,
+    minWeight,
+    maxWeight,
     totalEntries: entries.length,
-    firstDate: sorted[0].date,
+    firstDate: sorted[0].date ?? null,
     ratePerWeek: calculateRatePerWeek(last30),
   };
 }

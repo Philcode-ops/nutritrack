@@ -280,7 +280,7 @@ export default function WeightScreen() {
                 <View
                   style={[
                     styles.progressBarFill,
-                    { width: `${Math.min(Math.max(getGoalProgress(summary.startWeight, summary.current, profile.goalWeight), 0), 100)}%` },
+                    { width: `${clampPct(getGoalProgress(summary.startWeight, summary.current, profile.goalWeight))}%` },
                   ]}
                 />
               </View>
@@ -410,11 +410,18 @@ function SummaryCard({
   );
 }
 
+function clampPct(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(Math.max(n, 0), 100);
+}
+
 function getGoalProgress(start: number, current: number, goal: number): number {
+  if (![start, current, goal].every(Number.isFinite)) return 0;
   const totalDistance = Math.abs(goal - start);
   if (totalDistance < 0.1) return 100;
   const progress = Math.abs(current - start);
-  return (progress / totalDistance) * 100;
+  const pct = (progress / totalDistance) * 100;
+  return Number.isFinite(pct) ? pct : 0;
 }
 
 // ── Styles ──────────────────────────────────────────────────────────

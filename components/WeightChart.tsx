@@ -23,11 +23,16 @@ function LineSegment({
   x1: number; y1: number; x2: number; y2: number;
   color: string; thickness: number; opacity?: number;
 }) {
+  // Guard against any non-finite input — NaN/Infinity in a style's width or
+  // in the transform rotate string crashes RN's native layout with
+  // "Invalid array length".
+  if (![x1, y1, x2, y2, thickness].every(Number.isFinite)) return null;
   const dx = x2 - x1;
   const dy = y2 - y1;
   const length = Math.sqrt(dx * dx + dy * dy);
-  if (length < 0.5) return null;
+  if (!Number.isFinite(length) || length < 0.5) return null;
   const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+  if (!Number.isFinite(angle)) return null;
   const midX = (x1 + x2) / 2;
   const midY = (y1 + y2) / 2;
 
@@ -49,10 +54,12 @@ function LineSegment({
 }
 
 function DashedHorizontalLine({ y, width, color }: { y: number; width: number; color: string }) {
+  if (!Number.isFinite(y) || !Number.isFinite(width) || width <= 0) return null;
+  const safeWidth = Math.min(width, 10000);            // hard cap to prevent runaway loops
   const dashWidth = 6;
   const gapWidth = 4;
   const dashes = [];
-  for (let x = 0; x < width; x += dashWidth + gapWidth) {
+  for (let x = 0; x < safeWidth; x += dashWidth + gapWidth) {
     dashes.push(
       <View
         key={x}
@@ -60,7 +67,7 @@ function DashedHorizontalLine({ y, width, color }: { y: number; width: number; c
           position: 'absolute',
           left: x,
           top: y,
-          width: Math.min(dashWidth, width - x),
+          width: Math.max(0, Math.min(dashWidth, safeWidth - x)),
           height: 1.5,
           backgroundColor: color,
           borderRadius: 1,
@@ -74,11 +81,19 @@ function DashedHorizontalLine({ y, width, color }: { y: number; width: number; c
 // ── Y-axis range calculation ────────────────────────────────────────
 
 function calculateYRange(weights: number[], goalWeight: number | null): { yMin: number; yMax: number } {
-  const allValues = goalWeight != null ? [...weights, goalWeight] : [...weights];
+  // Only keep finite values — defend against NaN goalWeight or corrupt entries
+  const finiteWeights = weights.filter(Number.isFinite);
+  const finiteGoal = goalWeight != null && Number.isFinite(goalWeight) ? goalWeight : null;
+  const allValues = finiteGoal != null ? [...finiteWeights, finiteGoal] : finiteWeights;
   if (allValues.length === 0) return { yMin: 70, yMax: 80 };
 
-  let min = Math.min(...allValues);
-  let max = Math.max(...allValues);
+  // Use reduce instead of spread to avoid edge-cases with very large arrays
+  let min = allValues[0];
+  let max = allValues[0];
+  for (const v of allValues) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
 
   // Ensure minimum range
   const range = max - min;
@@ -96,6 +111,10 @@ function calculateYRange(weights: number[], goalWeight: number | null): { yMin: 
   // Round to nearest 0.5
   min = Math.floor(min * 2) / 2;
   max = Math.ceil(max * 2) / 2;
+
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
+    return { yMin: 70, yMax: 80 };
+  }
 
   return { yMin: min, yMax: max };
 }
@@ -119,21 +138,34 @@ export function WeightChart({ entries, trendValues, goalWeight }: WeightChartPro
   const plotHeight = CHART_HEIGHT - PADDING.top - PADDING.bottom;
 
   const chartData = useMemo(() => {
-    if (entries.length === 0 || containerWidth === 0) return null;
+    // Hard-gate: need entries, a measured container, and positive plot space
+    if (!Array.isArray(entries) || entries.length === 0) return null;
+    if (containerWidth === 0 || plotWidth <= 0 || plotHeight <= 0) return null;
 
-    const weights = entries.map(e => e.weight_kg);
-    const { yMin, yMax } = calculateYRange(weights, goalWeight);
+    // Filter to entries with finite weight and valid date — everything downstream
+    // assumes numbers it can safely subtract/divide
+    const safeEntries = entries.filter(e => {
+      const w = Number(e.weight_kg);
+      const t = dateToTimestamp(e.date);
+      return Number.isFinite(w) && Number.isFinite(t);
+    });
+    if (safeEntries.length === 0) return null;
+
+    const safeGoal = goalWeight != null && Number.isFinite(goalWeight) ? goalWeight : null;
+    const weights = safeEntries.map(e => e.weight_kg);
+    const { yMin, yMax } = calculateYRange(weights, safeGoal);
     const yRange = yMax - yMin;
+    if (!Number.isFinite(yRange) || yRange <= 0) return null;
 
     // Map entries to pixel coordinates
-    const timestamps = entries.map(e => dateToTimestamp(e.date));
+    const timestamps = safeEntries.map(e => dateToTimestamp(e.date));
     const tMin = timestamps[0];
     const tMax = timestamps[timestamps.length - 1];
     const tRange = tMax - tMin;
 
-    const points = entries.map((entry, i) => {
-      // For single entry, center it
-      const xFrac = tRange > 0 ? (timestamps[i] - tMin) / tRange : 0.5;
+    const points = safeEntries.map((entry, i) => {
+      // For single entry or zero time-range, center it
+      const xFrac = Number.isFinite(tRange) && tRange > 0 ? (timestamps[i] - tMin) / tRange : 0.5;
       const yFrac = (entry.weight_kg - yMin) / yRange;
       return {
         x: PADDING.left + xFrac * plotWidth,
@@ -141,40 +173,47 @@ export function WeightChart({ entries, trendValues, goalWeight }: WeightChartPro
         weight: entry.weight_kg,
         date: entry.date,
       };
-    });
+    }).filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
 
-    // Trend line points
+    if (points.length === 0) return null;
+
+    // Trend line points — line up by index with safeEntries, then drop any non-finite coords
     const trendPoints = trendValues.map((val, i) => {
       if (i >= points.length) return null;
+      if (!Number.isFinite(val)) return null;
       const yFrac = (val - yMin) / yRange;
-      return {
-        x: points[i].x,
-        y: PADDING.top + (1 - yFrac) * plotHeight,
-      };
+      const y = PADDING.top + (1 - yFrac) * plotHeight;
+      if (!Number.isFinite(y)) return null;
+      return { x: points[i].x, y };
     }).filter(Boolean) as { x: number; y: number }[];
 
-    // Goal line Y position
-    const goalY = goalWeight != null
-      ? PADDING.top + (1 - (goalWeight - yMin) / yRange) * plotHeight
-      : null;
+    // Goal line Y position — null if it doesn't produce a finite pixel value
+    let goalY: number | null = null;
+    if (safeGoal != null) {
+      const candidate = PADDING.top + (1 - (safeGoal - yMin) / yRange) * plotHeight;
+      if (Number.isFinite(candidate)) goalY = candidate;
+    }
 
     // Y-axis grid values
     const gridValues: number[] = [];
     for (let i = 0; i < GRID_LINE_COUNT; i++) {
       const val = yMin + (yRange * i) / (GRID_LINE_COUNT - 1);
-      gridValues.push(Math.round(val * 10) / 10);
+      if (Number.isFinite(val)) gridValues.push(Math.round(val * 10) / 10);
     }
 
-    // X-axis labels (pick evenly spaced dates)
+    // X-axis labels (pick evenly spaced dates). Use `points.length` (post-filter)
+    // rather than `entries.length` so indices can never overshoot.
     const xLabels: { x: number; label: string }[] = [];
-    if (entries.length <= X_LABEL_COUNT) {
-      entries.forEach((e, i) => {
-        xLabels.push({ x: points[i].x, label: formatDisplayDate(e.date) });
+    const labelCount = Math.min(X_LABEL_COUNT, points.length);
+    if (points.length <= X_LABEL_COUNT) {
+      points.forEach((p, i) => {
+        xLabels.push({ x: p.x, label: formatDisplayDate(safeEntries[i].date) });
       });
     } else {
-      for (let i = 0; i < X_LABEL_COUNT; i++) {
-        const idx = Math.round((i / (X_LABEL_COUNT - 1)) * (entries.length - 1));
-        xLabels.push({ x: points[idx].x, label: formatDisplayDate(entries[idx].date) });
+      for (let i = 0; i < labelCount; i++) {
+        const idx = Math.round((i / Math.max(1, labelCount - 1)) * (points.length - 1));
+        const clampedIdx = Math.min(Math.max(idx, 0), points.length - 1);
+        xLabels.push({ x: points[clampedIdx].x, label: formatDisplayDate(safeEntries[clampedIdx].date) });
       }
     }
 

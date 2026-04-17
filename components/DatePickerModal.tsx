@@ -4,7 +4,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, FontSize, BorderRadius } from '../constants/theme';
-import { getTodayKey } from '../constants/weight';
+import { getTodayKey, parseDateKey } from '../constants/weight';
 
 // ─────────────────────────────────────────────────────────────────────
 // A compact calendar picker for fast historical date selection.
@@ -29,8 +29,12 @@ interface Props {
 }
 
 function parseYearMonth(dateStr: string): { y: number; m: number } {
-  const [y, m] = dateStr.split('-').map(Number);
-  return { y, m: m - 1 };
+  const parsed = parseDateKey(dateStr);
+  if (parsed) return { y: parsed.y, m: parsed.m - 1 };
+  // Fallback to today if input is malformed — prevents NaN viewYear/viewMonth
+  // propagating into loop bounds and native Date construction.
+  const now = new Date();
+  return { y: now.getFullYear(), m: now.getMonth() };
 }
 
 export function DatePickerModal({
@@ -51,14 +55,21 @@ export function DatePickerModal({
     }
   }, [visible, selectedDate]);
 
-  // Build the day grid for the currently-viewed month
-  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
-  const firstWeekday = new Date(viewYear, viewMonth, 1).getDay(); // 0 = Sunday
+  // Build the day grid for the currently-viewed month. Defend against any
+  // non-finite viewYear/viewMonth slipping in — Date(NaN,…) produces NaN day
+  // counts which could otherwise feed malformed loops.
+  const safeYear = Number.isFinite(viewYear) ? Math.trunc(viewYear) : new Date().getFullYear();
+  const safeMonth = Number.isFinite(viewMonth) ? Math.min(Math.max(Math.trunc(viewMonth), 0), 11) : new Date().getMonth();
+
+  const rawDaysInMonth = new Date(safeYear, safeMonth + 1, 0).getDate();
+  const rawFirstWeekday = new Date(safeYear, safeMonth, 1).getDay();
+  const daysInMonth = Number.isFinite(rawDaysInMonth) && rawDaysInMonth > 0 ? rawDaysInMonth : 30;
+  const firstWeekday = Number.isFinite(rawFirstWeekday) ? Math.min(Math.max(rawFirstWeekday, 0), 6) : 0;
 
   const cells: (number | null)[] = [];
   for (let i = 0; i < firstWeekday; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
-  while (cells.length % 7 !== 0) cells.push(null);
+  while (cells.length % 7 !== 0 && cells.length < 42) cells.push(null);
 
   const weeks: (number | null)[][] = [];
   for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
@@ -73,7 +84,7 @@ export function DatePickerModal({
   };
 
   const cellDateStr = (day: number) =>
-    `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    `${safeYear}-${String(safeMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
   const isDisabled = (day: number): boolean => {
     const d = cellDateStr(day);
@@ -113,7 +124,7 @@ export function DatePickerModal({
             <TouchableOpacity onPress={() => setViewYear(viewYear - 1)} style={styles.navBtn}>
               <Ionicons name="chevron-back" size={18} color={Colors.primary} />
             </TouchableOpacity>
-            <Text style={styles.yearText}>{viewYear}</Text>
+            <Text style={styles.yearText}>{safeYear}</Text>
             <TouchableOpacity onPress={() => setViewYear(viewYear + 1)} style={styles.navBtn}>
               <Ionicons name="chevron-forward" size={18} color={Colors.primary} />
             </TouchableOpacity>
@@ -124,7 +135,7 @@ export function DatePickerModal({
             <TouchableOpacity onPress={() => shiftMonth(-1)} style={styles.navBtn}>
               <Ionicons name="chevron-back" size={22} color={Colors.primary} />
             </TouchableOpacity>
-            <Text style={styles.monthText}>{MONTH_NAMES[viewMonth]}</Text>
+            <Text style={styles.monthText}>{MONTH_NAMES[safeMonth]}</Text>
             <TouchableOpacity onPress={() => shiftMonth(1)} style={styles.navBtn}>
               <Ionicons name="chevron-forward" size={22} color={Colors.primary} />
             </TouchableOpacity>
